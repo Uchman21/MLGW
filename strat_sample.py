@@ -11,7 +11,6 @@ rng = np.random.RandomState(seed=glo_seed)
 
 def iterative_sampling(Y, labeled_idx, fold, rng):
 	ratio_per_fold = 1 / fold
-	# indecies = np.arange(np.shape(Y)[0])
 	folds = [[] for i in range(fold)]
 	number_of_examples_per_fold = np.array([(1 / fold) * np.shape(Y[labeled_idx, :])[0] for i in range(fold)])
 
