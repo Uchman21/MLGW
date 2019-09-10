@@ -10,6 +10,14 @@ np.random.seed(glo_seed)
 rng = np.random.RandomState(seed=glo_seed)
 
 def iterative_sampling(Y, labeled_idx, fold, rng):
+	'''
+		Y -- label array (unlabeled  nodes have a zero vector)
+		labeled_idx -- indicies for labeled nodes
+		fold -- number of splits (partritions)
+		rng -- random state
+		
+		Stractified iterative spliting of multi-labeled 
+	'''
 	ratio_per_fold = 1 / fold
 	folds = [[] for i in range(fold)]
 	number_of_examples_per_fold = np.array([(1 / fold) * np.shape(Y[labeled_idx, :])[0] for i in range(fold)])
