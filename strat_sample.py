@@ -17,8 +17,11 @@ def iterative_sampling(Y, labeled_idx, fold, rng):
 	blacklist_samples = np.array([])
 	number_of_examples_per_label = np.sum(Y[labeled_idx, :], 0)
 	blacklist_labels = np.where(number_of_examples_per_label < fold)[0]
-	print(blacklist_labels)
 	desired_examples_per_label = number_of_examples_per_label * ratio_per_fold
+	if blacklist_labels.shape[0] > 0:
+		print("The following labels were removed because of having",
+		 " less samples than number of partritions: ({}) some samples",
+		 " might be removed to preseve data intergrety".format(blacklist_labels))
 
 	subset_label_desire = np.array([desired_examples_per_label for i in range(fold)])
 	total_index = np.sum(labeled_idx)
@@ -58,10 +61,7 @@ def iterative_sampling(Y, labeled_idx, fold, rng):
 				elif (Y[index, min_label_index[0]] == 1 and index != -1):
 					if (min_label_index[0] in blacklist_labels) and np.any(Y[index, sel_labels]) == False:
 						np.append(blacklist_samples, index)
-
-						# subset_label_desire[m,Y[index,:]] -= 1
 						labeled_idx[np.where(labeled_idx == index)] = -1
-						# number_of_examples_per_fold[m] -= 1
 						total_index = total_index - index
 
 			number_of_examples_per_label[min_label_index[0]] = max_label_occurance
