@@ -1,12 +1,6 @@
 
 # -*- coding: utf-8 -*-
 
-'''
-LICENSE: BSD 2-Clause
-
-Summer 2018
-'''
-
 from __future__ import print_function
 from __future__ import absolute_import
 from __future__ import division
@@ -29,7 +23,7 @@ from sklearn.metrics.pairwise import cosine_distances
 
 
 
-class RNN_walk():
+class MLGWalk():
     '''
     Multi-label Graph Walk
     '''

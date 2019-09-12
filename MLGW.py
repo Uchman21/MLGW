@@ -62,7 +62,7 @@ def main(_):
 
 def benchmark_ml(FLAGS):
 
-	from model import RNN_walk
+	from model import MLGWalk
 	
 	#initializations
 	
@@ -107,7 +107,7 @@ def benchmark_ml(FLAGS):
 		gc.collect()  # force gabage collect to clean up memory
 		tf.reset_default_graph()  #rest the Tensowflow graph
 		
-		r_walk = RNN_walk(FLAGS, num_of_labels)
+		r_walk = MLGWalk(FLAGS, num_of_labels)
 		if i == 0:
 			print(r_walk)
 
