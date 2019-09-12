@@ -93,7 +93,7 @@ class RNN_walk():
     def load_data(self, test_nodes):
 
         with tf.variable_scope("cost", reuse=tf.AUTO_REUSE):
-            node_features = load_npz("../final_extraction/{}/{}_matrices/lsi_ngram.npz".format(self.FLAGS.dataset,self.FLAGS.dataset)).toarray()
+            node_features = load_npz("{}/{}_matrices/lsi.npz".format(self.FLAGS.dataset_dir,self.FLAGS.dataset)).toarray()
             node_features = Normalizer().fit_transform(node_features)
             node_features = np.vstack((np.zeros(node_features.shape[-1]), node_features))
 
@@ -103,7 +103,7 @@ class RNN_walk():
 
             if self.FLAGS.has_edge_attr:
                 try:
-                    edge_features = load_npz("../final_extraction/{}/{}_matrices/lsi_c_ngram.npz".format(self.FLAGS.dataset,self.FLAGS.dataset)).toarray()
+                    edge_features = load_npz("{}/{}_matrices/lsi_context.npz".format(self.FLAGS.dataset_dir,self.FLAGS.dataset)).toarray()
                     edge_features = np.vstack((np.zeros(edge_features.shape[-1]), edge_features))
                     self.edge_features = Normalizer().fit_transform(edge_features)
                     self.edge_emb_init= tf.placeholder(tf.float32, shape=self.edge_features.shape)
@@ -149,7 +149,7 @@ class RNN_walk():
         Setup the lookup tables required for smooth run
         '''
 
-        edgelist = open("../final_extraction/{}/{}.edgelist".format(self.FLAGS.dataset,self.FLAGS.dataset), "rU").read().split("\n")[:-1]
+        edgelist = open("{}/{}.edgelist".format(self.FLAGS.dataset_dir,self.FLAGS.dataset), "rU").read().split("\n")[:-1]
         neighbor = {}
         edge_tensor = [0,0]
         iter = 2
@@ -413,6 +413,9 @@ class RNN_walk():
                 return tf.concat([h_t, tf.cast(next_x, self.dtype), likelihood, x_t],-1)
             elif "mlgw_kl" in self.FLAGS.variant:
                 return tf.concat([h_t, tf.cast(next_x, self.dtype), likelihood, KL, x_t],-1)
+            else:
+                print("Unknown variant option: {}".format(self.FLAGS.variant))
+                exit()
 
         # A little hack (to obtain the same shape as the input matrix) to define the initial hidden state h_0
         dummy_emb = tf.tile(tf.expand_dims(tf.cast(trueX, self.dtype),-1), [1,1,1,self.config['dim_Av']])
@@ -425,6 +428,9 @@ class RNN_walk():
             concat_tensor = tf.concat([h_0, next_x0, next_x0, dummy_emb, dummy_emb], -1)
         elif "mlgw_kl" in self.FLAGS.variant:
             concat_tensor = tf.concat([h_0, next_x0, next_x0, next_x0,  dummy_emb, dummy_emb], -1)
+        else:
+            print("Unknown variant option: {}".format(self.FLAGS.variant))
+            exit()
         
 
         if self.is_train == True:
@@ -438,6 +444,9 @@ class RNN_walk():
             h_t_b = self.BGRU(tf.reverse(h_t[:,:,:,:,self.config['l_dim'] +2:], [0]))
         elif "mlgw_kl" in self.FLAGS.variant:
             h_t_b = self.BGRU(tf.reverse(h_t[:,:,:,:,self.config['l_dim'] +3:], [0]))
+        else:
+            print("Unknown variant option: {}".format(self.FLAGS.variant))
+            exit()
 
         
         ht =  h_t[-1,:,:,:,:self.config['l_dim']] + h_t_b
@@ -447,6 +456,9 @@ class RNN_walk():
             return output, tf.reduce_sum(h_t[:-1,:, :,:,self.config['l_dim']+1],0), None
         elif "mlgw_kl" in self.FLAGS.variant:
             return output, tf.reduce_sum(h_t[:-1,:, :,:,self.config['l_dim']+1],0), tf.reduce_sum(h_t[:-1,:, :,:,self.config['l_dim']+2],0)
+        else:
+            print("Unknown variant option: {}".format(self.FLAGS.variant))
+            exit()
 
 
 
@@ -520,9 +532,12 @@ class RNN_walk():
 
             
             if self.FLAGS.variant == "mlgw_i":
-                M_loss = tf.reduce_mean(_cost - (reward * likelihood), 1)
+                M_loss = tf.reduce_mean(_cost - reward * (-self.config['beta'] * likelihood), 1)
             elif "mlgw_kl" in self.FLAGS.variant:
                 M_loss = tf.reduce_mean(_cost - reward * ((-self.config['beta']  *likelihood) - (self.config['alpha'] * KL)), 1)
+            else:
+                print("Unknown variant option: {}".format(self.FLAGS.variant))
+                exit()
 
             return tf.reduce_mean(tf.reduce_mean(M_loss, 0))
 
@@ -637,26 +652,6 @@ class RNN_walk():
                 sess.run(glob_init)
             sess.run(tf.local_variables_initializer())
             sess.graph.finalize()  # Graph is read-only after this statement.
-
-            # total_parameters = 0
-            # for variable in tf.trainable_variables():
-            #     # shape is an array of tf.Dimension
-            #     try:
-            #         shape = variable.get_shape()
-            #         print(shape)
-            #         print(len(shape))
-            #         print(variable.dtype)
-            #         variable_parameters = 1
-            #         for dim in shape:
-            #             print(dim)
-            #             variable_parameters *= dim.value
-            #         print(variable_parameters)
-            #         total_parameters += variable_parameters
-            #     except:
-            #         print(variable.name, variable.dtype)
-            # print(total_parameters)
-            # exit()
-
 
 
             for e in range(self.FLAGS.epochs):

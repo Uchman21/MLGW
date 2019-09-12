@@ -32,8 +32,9 @@ def parse_args():
 	flags = tf.app.flags
 	FLAGS = flags.FLAGS
 
-	flags.DEFINE_string('dataset','dblp_multi','Dataset index [dblp, cora, cora_new, delve].')
-	flags.DEFINE_string('variant', 'mlgw_i', 'variant to use [mlgw_i, mlgw_kl, mlgw_mean].')
+	flags.DEFINE_string('dataset','dblp','Dataset index [dblp, cora, cora_new, delve].')
+	flags.DEFINE_string('dataset_dir','dblp/','Dataset directory.')
+	flags.DEFINE_string('variant', 'mlgw_i', 'variant to use [mlgw_i, mlgw_kl, mlgw_kl+].')
 	flags.DEFINE_float('lrate',  0.01, 'Learning rate.')
 	flags.DEFINE_float('gamma',  0.9, 'Reinforcement learning reward discount rate')
 	flags.DEFINE_float('beta',1, 'KL divergance strenght. Used only for mlgw_kl variant.')
@@ -75,7 +76,7 @@ def benchmark_ml(FLAGS):
 	acc_nn, err = 0 , 0
 	patritions = 5
 	num_runs = 0
-	labels = sp.load_npz("../final_extraction/{}/{}_matrices/label.npz".format(FLAGS.dataset,FLAGS.dataset)).astype(np.int32)
+	labels = sp.load_npz("{}/{}_matrices/label.npz".format(FLAGS.dataset_dir,FLAGS.dataset)).astype(np.int32)
 	labels = sp.vstack((np.zeros(labels.shape[-1]), labels)).tocsr()
 	labeled_idx = np.where(labels.sum(-1) > 0)[0]
 	score_micro_final = np.zeros(3)
