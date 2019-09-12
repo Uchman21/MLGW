@@ -56,24 +56,25 @@ class RNN_walk():
         self.config = OrderedDict()
         self.config['l_dim'] = FLAGS.l_dim
         self.config['walk_len'] = FLAGS.walk_len
-        self.config['kl_cost'] = FLAGS.kl_cost
+        self.config['beta'] = FLAGS.beta
         self.config['lrate'] = FLAGS.lrate
         self.config['max_neighbors'] = FLAGS.max_neighbors
-        self.config['gamma'] = tf.constant(FLAGS.gamma)
+        self.config['gamma'] = FLAGS.gamma
+        self.config['alpha'] = FLAGS.alpha
 
         #other model parameters 
-        self.config['trainA'] = FLAGS.num_walks
-        self.config['testA'] = FLAGS.num_walks
-        self.config['activation'] = tf.nn.relu
+        self.config['num_walks'] = FLAGS.num_walks
         self.config['dim_y'] = num_of_labels
-        self.config['is_transductive'] = FLAGS.is_transductive
+        self.config['transductive'] = FLAGS.transductive
+        self.config['activation'] = tf.nn.relu
         
         # place holders
         self.X = tf.placeholder(tf.int64, shape=(None,))
         self.is_training = tf.placeholder(tf.bool)
         self.get_path = tf.placeholder(tf.bool)
+        self.gamma = tf.constant(self.config['gamma'])
 
-        self.T = tf.constant(float(walk_len))
+        self.T = tf.constant(float(self.config['walk_len']))
         self.range = tf.Variable(tf.range(0, self.config['walk_len'], 1, dtype=self.dtype), trainable=False)
 
         # identifier
@@ -120,8 +121,8 @@ class RNN_walk():
 
             self.Y = tf.placeholder(self.dtype, shape=(None, self.config['dim_y']))
             self.setup_lookup(test_nodes) #setup 
-            self.attention_node = tf.Variable(tf.ones([self.config['dim_y'],self.config['trainA'], self.FLAGS.batchsize]),validate_shape=False) #tf.get_variable("att_vect", shape=[self.config['trainA'], 128])
-            self.attention_edge = tf.Variable(tf.ones([self.config['dim_y'], self.config['trainA'], self.FLAGS.batchsize]),validate_shape=False) #tf.get_variable("att_vect", shape=[self.config['trainA'], 128])
+            self.attention_node = tf.Variable(tf.ones([self.config['dim_y'],self.config['num_walks'], self.FLAGS.batchsize]),validate_shape=False) #tf.get_variable("att_vect", shape=[self.config['num_walks'], 128])
+            self.attention_edge = tf.Variable(tf.ones([self.config['dim_y'], self.config['num_walks'], self.FLAGS.batchsize]),validate_shape=False) #tf.get_variable("att_vect", shape=[self.config['num_walks'], 128])
 
             self.cost = self.__cost(self.X)
             self.get_embd = self.get_embbeding(self.X)
@@ -168,7 +169,7 @@ class RNN_walk():
             if neighbor.has_key(s):
                 neighbor[s][0].append([iter])
             else:
-                neighbor[s] = [[[iter, w]], []]
+                neighbor[s] = [[[iter]], []]
 
 
             edge_tensor.extend((s,t))
@@ -216,7 +217,7 @@ class RNN_walk():
                 else:
                     edges_per_node[key, :others.shape[0]] = others
         # with tf.device('/cpu:0'):
-        if self.config['is_transductive']:
+        if self.config['transductive']:
             test_mask = edges_per_node > 0
         else:
             test_mask = ~np.isin(np.array(edge_tensor)[edges_per_node.astype(np.int32)], test_nodes)
@@ -248,24 +249,38 @@ class RNN_walk():
         A = params.get_shape().as_list()[:2]
         p_flat = tf.reshape(params, [-1])
         indices = tf.reshape(indices, [-1])
-        i_flat = tf.reshape(tf.reshape(tf.range(0, p_shape[1]*p_shape[0]*p_shape[2]) * p_shape[3], [-1]) + indices, [-1])
+        i_flat = tf.reshape(tf.range(0, p_shape[1]*p_shape[0]*p_shape[2]) * p_shape[3], [-1]) + indices
         partitions = tf.reduce_sum(tf.one_hot(i_flat, tf.shape(p_flat)[0], dtype='int32'), 0)
         col_sel = tf.dynamic_partition(p_flat, partitions, 2)
         col_sel = col_sel[1]
         return tf.reshape(col_sel,[A[0],A[1], p_shape[2], 1])
 
 
-    def dense(self, inputs, output_dim, name):
+    def dense(self, inputs, output_dim, name, is_private=True):
+
         '''
             Dense layer
+
+            inputs -- input vectors
+            output_dim -- output dimension 
+            name -- name of the operation
+            is_private -- independent weights per label agent
         '''
         shape = inputs.get_shape().as_list()
         if len(shape) > 4:
-            W = tf.get_variable(name='W_{}'.format(name) ,
-                                initializer = lambda: tf.glorot_uniform_initializer()(( shape[0], shape[-1], output_dim)))
-            b = tf.get_variable(name='b_{}'.format(name) , initializer = lambda: -1*tf.ones_initializer()(output_dim))
+            if is_private:
+                W = tf.get_variable(name='W_{}'.format(name) ,
+                                    initializer = lambda: tf.glorot_uniform_initializer()(( shape[0], shape[-1], output_dim)))
+                b = tf.get_variable(name='b_{}'.format(name) , initializer = lambda: -1*tf.ones_initializer()(output_dim))
 
-            return tf.nn.bias_add(tf.einsum('abilj,ajk->abilk', inputs, W), b)
+                return tf.nn.bias_add(tf.einsum('abilj,ajk->abilk', inputs, W), b)
+            else:
+                W = tf.get_variable(name='W_{}'.format(name) ,
+                                    initializer = lambda: tf.glorot_uniform_initializer()((shape[-1], output_dim)))
+                b = tf.get_variable(name='b_{}'.format(name) , initializer = lambda: -1*tf.ones_initializer()(output_dim))
+
+                return tf.nn.bias_add(tf.einsum('abilj,jk->abilk', inputs, W), b)
+
         else:
             W = tf.get_variable(name='W_{}'.format(name) ,
                                 initializer = lambda: tf.glorot_uniform_initializer()((shape[0],  shape[-1], output_dim)))
@@ -276,6 +291,11 @@ class RNN_walk():
 
     def sample_neighbor_walk(self, current_x, current_emb, h, t, reuse=tf.AUTO_REUSE):
         '''
+            current_x -- current nodes (v^t)
+            current_emb -- current node feature embedding (x^t)
+            h -- history context
+            t -- time step
+
             Sample the next nodes to visit (Step procedure)
         '''
 
@@ -304,8 +324,32 @@ class RNN_walk():
         filter_neighbors = tf.greater_equal(neighbors_weight, 0.5)
         mask2 = tf.logical_and(filter_neighbors, mask)
         #Sample from the probability distribution
-        neighbors_weight = tf.div_no_nan(neighbors_weight , tf.reduce_sum(neighbors_weight))
-        next_id_sample = tf.expand_dims(tf.distributions.Categorical(probs=neighbors_weight).sample(), -1)
+        # neighbors_weight = tf.div_no_nan(neighbors_weight , tf.reduce_sum(neighbors_weight))
+        neighbors_weight = tf.div_no_nan(neighbors_weight , tf.reduce_sum(neighbors_weight, -1, keepdims=True))
+
+        if self.FLAGS.variant == "mlgw_i":
+            next_id_sample = tf.expand_dims(tf.distributions.Categorical(probs=neighbors_weight).sample(), -1)
+        else:
+            private_policy = tf.distributions.Categorical(logits=tf.log(tf.clip_by_value(neighbors_weight,1e-10,1.0)))
+            #Global policy
+            att_emb_glob = self.dense(att_emb, self.config['l_dim'], name='e_e_dense2_emb', is_private= True)
+            neighbors_weight_glob = tf.squeeze(tf.keras.backend.hard_sigmoid(self.dense(att_emb_glob, 1, name='e_e_dense2_public', is_private=False )),-1)
+            neighbors_weight_glob = tf.multiply(neighbors_weight_glob,tf.cast(mask, tf.float32))
+            neighbors_weight_glob = tf.div_no_nan(neighbors_weight_glob , tf.reduce_sum(neighbors_weight_glob, -1, keepdims=True))
+            global_policy = tf.distributions.Categorical(logits=tf.log(tf.clip_by_value(neighbors_weight_glob,1e-10,1.0)))
+
+            if self.FLAGS.variant == "mlgw_kl":
+                next_id_sample = tf.expand_dims(private_policy.sample(), -1)
+            elif self.FLAGS.variant == "mlgw_kl+":
+                final_weight = tf.cond(self.is_training, lambda : tf.multiply(neighbors_weight, neighbors_weight_glob), lambda : neighbors_weight)
+                joint_policy = tf.distributions.Categorical(logits=tf.log(tf.clip_by_value(final_weight,1e-10,1.0)))
+                next_id_sample = tf.expand_dims(joint_policy.sample(), -1)
+            else:
+                print("Unknown variant option: {}".format(self.FLAGS.variant))
+                exit()
+
+            
+
         #Obtain the sampled next node to visit
         next_id = tf.batch_gather(neighbors, next_id_sample)
         next_id = tf.nn.embedding_lookup(self.edge_tensor, next_id)
@@ -317,11 +361,18 @@ class RNN_walk():
         non_isolated_nodes = tf.logical_and(tf.reduce_any(mask, -1), tf.squeeze(is_sample_masked,-1))
         next_id = tf.add(tf.multiply(tf.squeeze(next_id,-1),tf.cast(non_isolated_nodes, tf.int64)) , tf.multiply(current_x,tf.cast(~non_isolated_nodes, tf.int64)))
 
-        #RL loss
-        likelihood = tf.squeeze(tf.batch_gather(neighbors_weight, next_id_sample),[-1])
-        likelihood = tf.multiply(tf.pow(self.config['gamma'], (self.T - t)), tf.ones_like(tf.log(tf.clip_by_value(likelihood,1e-10,1.0))))
+        if self.FLAGS.variant == "mlgw_kl+":
+            likelihood = tf.squeeze(self.gather_cols4D(final_weight, next_id_sample),[-1])
+        else:
+            likelihood = tf.squeeze(self.gather_cols4D(neighbors_weight, next_id_sample),[-1])
+        likelihood = tf.multiply(tf.pow(self.gamma, (self.T - t)), tf.log(tf.clip_by_value(likelihood,1e-10,1.0)))
 
-        return tf.expand_dims(next_id,-1), neighbor_emb, tf.expand_dims(likelihood,-1)
+        if self.FLAGS.variant == "mlgw_i":
+            return tf.expand_dims(next_id,-1), neighbor_emb, tf.expand_dims(likelihood,-1), None
+        elif "mlgw_kl" in self.FLAGS.variant:
+            # entropy = -self.config['beta'] * tf.reduce_mean(tf.losses.log_loss(labels=neighbors_weight, predictions=neighbors_weight_glob, reduction=tf.losses.Reduction.NONE), -1)
+            KL = tf.multiply(tf.pow(self.gamma, (self.T - t)), tf.distributions.kl_divergence(private_policy, global_policy))
+            return tf.expand_dims(next_id,-1), neighbor_emb, tf.expand_dims(likelihood,-1),  tf.expand_dims(KL,-1)
 
 
     def GRU(self, trueX):
@@ -345,7 +396,8 @@ class RNN_walk():
 
 
             x_t = tf.nn.embedding_lookup(self.node_emb, x)
-            next_x, c_t, likelihood = self.sample_neighbor_walk(x, x_t, h_tm1, t)
+            next_x, c_t, likelihood, KL = self.sample_neighbor_walk(x, x_t, h_tm1, t)
+
             x_t = tf.concat([x_t, c_t], -1)
             
             zr_t = tf.keras.backend.hard_sigmoid(self.dense(tf.concat([x_t, h_tm1],-1), self.config['l_dim']*2, name='zr'))
@@ -357,7 +409,10 @@ class RNN_walk():
             # Compute the next hidden state
             h_t = tf.multiply(1 - z_t, h_tm1) + tf.multiply(z_t, h_proposal)
 
-            return tf.concat([h_t, tf.cast(next_x, self.dtype), likelihood, x_t],-1)
+            if self.FLAGS.variant == "mlgw_i":
+                return tf.concat([h_t, tf.cast(next_x, self.dtype), likelihood, x_t],-1)
+            elif "mlgw_kl" in self.FLAGS.variant:
+                return tf.concat([h_t, tf.cast(next_x, self.dtype), likelihood, KL, x_t],-1)
 
         # A little hack (to obtain the same shape as the input matrix) to define the initial hidden state h_0
         dummy_emb = tf.tile(tf.expand_dims(tf.cast(trueX, self.dtype),-1), [1,1,1,self.config['dim_Av']])
@@ -365,7 +420,12 @@ class RNN_walk():
         h_0 = tf.matmul(dummy_emb, tf.zeros(dtype=tf.float32, shape=(shape[0],shape[1], self.config['dim_Av'], self.config['l_dim'])),
                         name='h_0' )
         next_x0 = tf.expand_dims(tf.cast(trueX, self.dtype),-1)
-        concat_tensor = tf.concat([h_0, next_x0, next_x0, dummy_emb, dummy_emb], -1)
+
+        if self.FLAGS.variant == "mlgw_i":
+            concat_tensor = tf.concat([h_0, next_x0, next_x0, dummy_emb, dummy_emb], -1)
+        elif "mlgw_kl" in self.FLAGS.variant:
+            concat_tensor = tf.concat([h_0, next_x0, next_x0, next_x0,  dummy_emb, dummy_emb], -1)
+        
 
         if self.is_train == True:
             dropout_hidden = tf.nn.dropout(h_0[0,0,:,:], 0.80, name='dropout2')
@@ -374,10 +434,19 @@ class RNN_walk():
         h_t = tf.scan(forward, self.range, initializer = concat_tensor,parallel_iterations=20,
                       name='h_t_transposed' )
 
-        h_t_b = self.BGRU(tf.reverse(h_t[:,:,:,:,self.config['l_dim'] +2:], [0]))
+        if self.FLAGS.variant == "mlgw_i":
+            h_t_b = self.BGRU(tf.reverse(h_t[:,:,:,:,self.config['l_dim'] +2:], [0]))
+        elif "mlgw_kl" in self.FLAGS.variant:
+            h_t_b = self.BGRU(tf.reverse(h_t[:,:,:,:,self.config['l_dim'] +3:], [0]))
+
+        
         ht =  h_t[-1,:,:,:,:self.config['l_dim']] + h_t_b
         output = tf.cond(self.get_path, lambda : tf.transpose(h_t[:,:,:, :,self.config['l_dim']], perm=[3,1,2,0]), lambda : ht)
-        return output, tf.reduce_sum(h_t[:-1,:, :,:,self.config['l_dim']+1],0)
+        
+        if self.FLAGS.variant == "mlgw_i":
+            return output, tf.reduce_sum(h_t[:-1,:, :,:,self.config['l_dim']+1],0), None
+        elif "mlgw_kl" in self.FLAGS.variant:
+            return output, tf.reduce_sum(h_t[:-1,:, :,:,self.config['l_dim']+1],0), tf.reduce_sum(h_t[:-1,:, :,:,self.config['l_dim']+2],0)
 
 
 
@@ -433,14 +502,14 @@ class RNN_walk():
 
 
             X = tf.expand_dims(tf.expand_dims(trueX, 0),0 )
-            X = tf.tile(X, [self.config['dim_y'], self.config['trainA'],1])
+            X = tf.tile(X, [self.config['dim_y'], self.config['num_walks'],1])
 
             Y = tf.transpose(tf.expand_dims(self.Y,-1), perm=[1,2,0])
-            Y = tf.tile(Y, [1,self.config['trainA'], 1])
+            Y = tf.tile(Y, [1,self.config['num_walks'], 1])
 
             # X -> Z
-            Z, likelihood = self.GRU(X)
-            Z = tf.reshape(Z, [self.config['dim_y'], self.config['trainA'], -1,self.config['l_dim']])
+            Z, likelihood, KL = self.GRU(X)
+            Z = tf.reshape(Z, [self.config['dim_y'], self.config['num_walks'], -1,self.config['l_dim']])
             
             log_pred_Y = tf.squeeze(self.dense(Z, 1, name='Z2y'),-1)
 
@@ -449,8 +518,13 @@ class RNN_walk():
 
             _cost = tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.cast(Y, self.dtype), logits=log_pred_Y)
 
-            return tf.reduce_mean(_cost) - tf.reduce_mean(reward * likelihood)
+            
+            if self.FLAGS.variant == "mlgw_i":
+                M_loss = tf.reduce_mean(_cost - (reward * likelihood), 1)
+            elif "mlgw_kl" in self.FLAGS.variant:
+                M_loss = tf.reduce_mean(_cost - reward * ((-self.config['beta']  *likelihood) - (self.config['alpha'] * KL)), 1)
 
+            return tf.reduce_mean(tf.reduce_mean(M_loss, 0))
 
     def __classify(self, trueX, reuse=tf.AUTO_REUSE):
         '''
@@ -463,9 +537,9 @@ class RNN_walk():
 
             # X -> Z
             X = tf.expand_dims(tf.expand_dims(trueX, 0),0)
-            X = tf.tile(X, [self.config['dim_y'], self.config['testA'],1])
-            Z, likelihood = self.GRU(X)
-            Z = tf.reshape(Z, [self.config['dim_y'], self.config['trainA'], -1,self.config['l_dim']])
+            X = tf.tile(X, [self.config['dim_y'], self.config['num_walks'],1])
+            Z, _, _ = self.GRU(X)
+            Z = tf.reshape(Z, [self.config['dim_y'], self.config['num_walks'], -1,self.config['l_dim']])
 
             log_pred_Y = tf.squeeze(self.dense(Z, 1, name='Z2y'),-1)
             Y = tf.reduce_mean(tf.nn.sigmoid(log_pred_Y),1)
@@ -482,9 +556,9 @@ class RNN_walk():
 
             # X -> Z
             X = tf.expand_dims(tf.expand_dims(trueX, 0),0)
-            X = tf.tile(X, [self.config['dim_y'], self.config['testA'],1])
-            Z, _ = self.GRU(X)
-            Z = tf.reshape(Z, [self.config['dim_y'], self.config['trainA'], -1,self.config['l_dim']])
+            X = tf.tile(X, [self.config['dim_y'], self.config['num_walks'],1])
+            Z, _, _ = self.GRU(X)
+            Z = tf.reshape(Z, [self.config['dim_y'], self.config['num_walks'], -1,self.config['l_dim']])
 
             return Z
 
@@ -494,10 +568,10 @@ class RNN_walk():
         return walk paths taken to classify nodes
         '''
         X = tf.expand_dims(tf.expand_dims(trueX, 0),0)
-        X = tf.tile(X, [self.config['dim_y'], self.config['testA'],1])
+        X = tf.tile(X, [self.config['dim_y'], self.config['num_walks'],1])
         with tf.variable_scope("cost", reuse=tf.AUTO_REUSE):
-            walk, _ = self.GRU(X)
-            walk = tf.reshape(walk, [-1,self.config['dim_y'],self.config['trainA'], self.config['walk_len']])
+            walk, _, _ = self.GRU(X)
+            walk = tf.reshape(walk, [-1,self.config['dim_y'],self.config['num_walks'], self.config['walk_len']])
             return walk
 
 
@@ -529,7 +603,7 @@ class RNN_walk():
 
         train_mask, test_mask = samples
         if self.FLAGS.save:
-            if not os.path.exists('paths')
+            if not os.path.exists('paths'):
                 os.mkdir('paths')
             train_mask = np.hstack((train_mask, test_mask))
             save_npz('paths/{}_idx'.format(self.id), csr_matrix(train_mask))
@@ -564,15 +638,34 @@ class RNN_walk():
             sess.run(tf.local_variables_initializer())
             sess.graph.finalize()  # Graph is read-only after this statement.
 
+            # total_parameters = 0
+            # for variable in tf.trainable_variables():
+            #     # shape is an array of tf.Dimension
+            #     try:
+            #         shape = variable.get_shape()
+            #         print(shape)
+            #         print(len(shape))
+            #         print(variable.dtype)
+            #         variable_parameters = 1
+            #         for dim in shape:
+            #             print(dim)
+            #             variable_parameters *= dim.value
+            #         print(variable_parameters)
+            #         total_parameters += variable_parameters
+            #     except:
+            #         print(variable.name, variable.dtype)
+            # print(total_parameters)
+            # exit()
 
 
-            for e in range(nepochs):
+
+            for e in range(self.FLAGS.epochs):
                 self.rng.shuffle(allidx)
                 epoch_cost = 0
 
                 for batchl in self.fetch_batches(allidx, nbatches, self.FLAGS.batchsize):
 
-                    if verbose:
+                    if self.FLAGS.verbose:
                         epoch_cost += sess.run([train_op, self.cost],
                                                feed_dict={self.X: train_mask[batchl],
                                                           self.Y: Y_train[batchl, :].toarray(),

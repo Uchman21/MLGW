@@ -1,7 +1,7 @@
 from __future__ import division
 from __future__ import print_function
 
-import os
+import os, sys, traceback
 os.environ['PYTHONHASHSEED'] = '2018'
 glo_seed = 2018
 
@@ -9,15 +9,16 @@ import numpy as np
 np.random.seed(glo_seed)
 rng = np.random.RandomState(seed=glo_seed)
 
-def iterative_sampling(Y, labeled_idx, fold, rng):
+def iterative_sampling(label, labeled_idx, fold, rng):
 	'''
-		Y -- label array (unlabeled  nodes have a zero vector)
+		label -- label array (unlabeled  nodes have a zero vector)
 		labeled_idx -- indicies for labeled nodes
 		fold -- number of splits (partritions)
 		rng -- random state
-		
+
 		Stractified iterative spliting of multi-labeled 
 	'''
+	Y = label.toarray()
 	ratio_per_fold = 1 / fold
 	folds = [[] for i in range(fold)]
 	number_of_examples_per_fold = np.array([(1 / fold) * np.shape(Y[labeled_idx, :])[0] for i in range(fold)])
@@ -77,6 +78,6 @@ def iterative_sampling(Y, labeled_idx, fold, rng):
 			traceback.print_exc(file=sys.stdout)
 			exit()
 
-	Y = Y[:, sel_labels]
+	label = label[:, sel_labels]
 
-	return folds, Y, blacklist_samples
+	return folds, label, blacklist_samples

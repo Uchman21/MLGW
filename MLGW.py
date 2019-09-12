@@ -32,19 +32,20 @@ def parse_args():
 	flags = tf.app.flags
 	FLAGS = flags.FLAGS
 
-	flags.DEFINE_string('dataset','cora','Dataset index [dblp, cora, cora_new, delve].')
+	flags.DEFINE_string('dataset','dblp_multi','Dataset index [dblp, cora, cora_new, delve].')
 	flags.DEFINE_string('variant', 'mlgw_i', 'variant to use [mlgw_i, mlgw_kl, mlgw_mean].')
-	flags.DEFINE_float('lr',  0.01, 'Learning rate.')
+	flags.DEFINE_float('lrate',  0.01, 'Learning rate.')
 	flags.DEFINE_float('gamma',  0.9, 'Reinforcement learning reward discount rate')
-	flags.DEFINE_float('kl_cost',0.1, 'KL divergance cost penalty. Used only for mlgw_kl variant.')
+	flags.DEFINE_float('beta',1, 'KL divergance strenght. Used only for mlgw_kl variant.')
+	flags.DEFINE_float('alpha',0.1, 'Entropy strenght. Used only for mlgw_kl variant.')
  	flags.DEFINE_integer('l_dim', 128, 'Dimension size of the latent vectors. Default is 128.')
-	flags.DEFINE_integer('batchsize', 128,'Size of batch input. Default is 128.')
+	flags.DEFINE_integer('batchsize', 32,'Size of batch input. Default is 128.')
 	flags.DEFINE_integer('max_neighbors', 40, 'maximum node neighbors to consider per step.')
 	flags.DEFINE_integer('num_walks', 3,'Number of walks per source. Default is 3.')
-	flags.DEFINE_integer('num_length',20,'Number of nodes to tranverse per walk. Default is 20.')
+	flags.DEFINE_integer('walk_len',20,'Number of nodes to tranverse per walk. Default is 20.')
 	flags.DEFINE_boolean('transductive', False, 'Boolean specifying if to train a transductive model. Default is False.')
 	flags.DEFINE_float('train_ratio', 0.5, 'ratio of dataset to use as train set (0.5 default).')
-	flags.DEFINE_integer('epoch', 10, 'number of training epoch (10 default).')
+	flags.DEFINE_integer('epochs', 10, 'number of training epoch (10 default).')
 	flags.DEFINE_boolean('test_single', False, 'Boolean specifying to test on each cv patrition(1/fold). Default is False.')
 	flags.DEFINE_boolean('save',False, 'Boolean specifying if to save trained paths only. Default is False.')
 	flags.DEFINE_boolean('verbose',False, 'display all outputs. Default is False.')
@@ -61,18 +62,12 @@ def main():
 
 	FLAGS = parse_args()
 
-	evaluate_ml(FLAGS)
+	benchmark_ml(FLAGS)
 
 
 def benchmark_ml(FLAGS):
 
-
-	if FLAGS.variant == 'mlgw_i':
-		from model import RNN_walk
-	elif FLAGS.variant == 'mlgw_kl':
-		from RNN_walk_mlv2 import RNN_walk
-	elif FLAGS.variant =='mlgw_mean':
-		from RNN_walk_mlv4 import RNN_walk
+	from model import RNN_walk
 	
 	#initializations
 	
@@ -89,7 +84,7 @@ def benchmark_ml(FLAGS):
 	
 
 	#split the labeled datasets into partritions using iterative stratified sampling
-	cv_splits, labels, blacklist_samples = iterative_sampling(labels.toarray(), labeled_idx, patritions, rng)
+	cv_splits, labels, blacklist_samples = iterative_sampling(labels, labeled_idx, patritions, rng)
 	num_of_labels = labels.shape[1]
 	precision_final = np.zeros(num_of_labels)
 	recall_final = np.zeros(num_of_labels)
@@ -103,7 +98,7 @@ def benchmark_ml(FLAGS):
 		training_samples = []
 		testing_samples = []
 		for j in range(len(cv_splits)):
-			if args.test_single:
+			if FLAGS.test_single:
 				if j != i:
 					training_samples += cv_splits[j]
 				else:
@@ -164,9 +159,7 @@ def benchmark_ml(FLAGS):
 	print(recall_final)
 	print("\n----------------per Label f1 -----------------")
 	print(F1_final)
-	out_file.close()
 
 
 if __name__ == "__main__":
-	args = parse_args()
-	main(args)
+	main()
