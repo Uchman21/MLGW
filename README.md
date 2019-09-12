@@ -13,12 +13,12 @@ The raw dblp and delve datasets (used in the paper) will be provided soon ().
 
 If you make use of this code or the MLGW algorithm in your work, please cite the following paper:
 
-@inproceedings{akujumulti,
-     author = {Akujuobi, Uchenna and Yufei, Han and Zhang, Qiannan and Zhang, Xiangliang},
-     title = {Collaborative Graph Walk for Semi-supervised Multi-Label Node Classification},
-     booktitle = {ICDM},
-     year = {2019}
-  }
+	@inproceedings{akujumulti,
+	     author = {Akujuobi, Uchenna and Yufei, Han and Zhang, Qiannan and Zhang, Xiangliang},
+	     title = {Collaborative Graph Walk for Semi-supervised Multi-Label Node Classification},
+	     booktitle = {ICDM},
+	     year = {2019}
+	  }
 
 ### Requirements
 
@@ -29,4 +29,4 @@ Recent versions of TensorFlow, numpy, scipy, sklearn are required. You can insta
 
 ### Running the code
 
-Use python MLGW.py to run using default settings. The parameters can be changed by passing during the command call (e.g., python MLGW.py --variant mlgw_i --verbose). Use python MLGW.py --help to display the parameters.
+Use `python MLGW.py` to run using default settings. The parameters can be changed by passing during the command call (e.g., `python MLGW.py --variant mlgw_i --verbose`). Use `python MLGW.py --help` to display the parameters.
