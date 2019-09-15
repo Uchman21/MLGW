@@ -87,7 +87,7 @@ class MLGWalk():
     def load_data(self, test_nodes):
 
         with tf.variable_scope("cost", reuse=tf.AUTO_REUSE):
-            node_features = load_npz("{}/{}_matrices/lsi.npz".format(self.FLAGS.dataset_dir,self.FLAGS.dataset)).toarray()
+            node_features = load_npz("{}/{}_matrices/node_attr.npz".format(self.FLAGS.dataset_dir,self.FLAGS.dataset)).toarray()
             node_features = Normalizer().fit_transform(node_features)
             node_features = np.vstack((np.zeros(node_features.shape[-1]), node_features))
 
@@ -97,7 +97,7 @@ class MLGWalk():
 
             if self.FLAGS.has_edge_attr:
                 try:
-                    edge_features = load_npz("{}/{}_matrices/lsi_context.npz".format(self.FLAGS.dataset_dir,self.FLAGS.dataset)).toarray()
+                    edge_features = load_npz("{}/{}_matrices/edge_attr.npz".format(self.FLAGS.dataset_dir,self.FLAGS.dataset)).toarray()
                     edge_features = np.vstack((np.zeros(edge_features.shape[-1]), edge_features))
                     self.edge_features = Normalizer().fit_transform(edge_features)
                     self.edge_emb_init= tf.placeholder(tf.float32, shape=self.edge_features.shape)
@@ -332,9 +332,9 @@ class MLGWalk():
             neighbors_weight_glob = tf.div_no_nan(neighbors_weight_glob , tf.reduce_sum(neighbors_weight_glob, -1, keepdims=True))
             global_policy = tf.distributions.Categorical(logits=tf.log(tf.clip_by_value(neighbors_weight_glob,1e-10,1.0)))
 
-            if self.FLAGS.variant == "mlgw_kl":
+            if self.FLAGS.variant == "mlgw_r":
                 next_id_sample = tf.expand_dims(private_policy.sample(), -1)
-            elif self.FLAGS.variant == "mlgw_kl+":
+            elif self.FLAGS.variant == "mlgw_r+":
                 final_weight = tf.cond(self.is_training, lambda : tf.multiply(neighbors_weight, neighbors_weight_glob), lambda : neighbors_weight)
                 joint_policy = tf.distributions.Categorical(logits=tf.log(tf.clip_by_value(final_weight,1e-10,1.0)))
                 next_id_sample = tf.expand_dims(joint_policy.sample(), -1)
@@ -355,7 +355,7 @@ class MLGWalk():
         non_isolated_nodes = tf.logical_and(tf.reduce_any(mask, -1), tf.squeeze(is_sample_masked,-1))
         next_id = tf.add(tf.multiply(tf.squeeze(next_id,-1),tf.cast(non_isolated_nodes, tf.int64)) , tf.multiply(current_x,tf.cast(~non_isolated_nodes, tf.int64)))
 
-        if self.FLAGS.variant == "mlgw_kl+":
+        if self.FLAGS.variant == "mlgw_r+":
             likelihood = tf.squeeze(self.gather_cols4D(final_weight, next_id_sample),[-1])
         else:
             likelihood = tf.squeeze(self.gather_cols4D(neighbors_weight, next_id_sample),[-1])
@@ -363,7 +363,7 @@ class MLGWalk():
 
         if self.FLAGS.variant == "mlgw_i":
             return tf.expand_dims(next_id,-1), neighbor_emb, tf.expand_dims(likelihood,-1), None
-        elif "mlgw_kl" in self.FLAGS.variant:
+        elif "mlgw_r" in self.FLAGS.variant:
             # entropy = -self.config['beta'] * tf.reduce_mean(tf.losses.log_loss(labels=neighbors_weight, predictions=neighbors_weight_glob, reduction=tf.losses.Reduction.NONE), -1)
             KL = tf.multiply(tf.pow(self.gamma, (self.T - t)), tf.distributions.kl_divergence(private_policy, global_policy))
             return tf.expand_dims(next_id,-1), neighbor_emb, tf.expand_dims(likelihood,-1),  tf.expand_dims(KL,-1)
@@ -405,7 +405,7 @@ class MLGWalk():
 
             if self.FLAGS.variant == "mlgw_i":
                 return tf.concat([h_t, tf.cast(next_x, self.dtype), likelihood, x_t],-1)
-            elif "mlgw_kl" in self.FLAGS.variant:
+            elif "mlgw_r" in self.FLAGS.variant:
                 return tf.concat([h_t, tf.cast(next_x, self.dtype), likelihood, KL, x_t],-1)
             else:
                 print("Unknown variant option: {}".format(self.FLAGS.variant))
@@ -420,7 +420,7 @@ class MLGWalk():
 
         if self.FLAGS.variant == "mlgw_i":
             concat_tensor = tf.concat([h_0, next_x0, next_x0, dummy_emb, dummy_emb], -1)
-        elif "mlgw_kl" in self.FLAGS.variant:
+        elif "mlgw_r" in self.FLAGS.variant:
             concat_tensor = tf.concat([h_0, next_x0, next_x0, next_x0,  dummy_emb, dummy_emb], -1)
         else:
             print("Unknown variant option: {}".format(self.FLAGS.variant))
@@ -436,7 +436,7 @@ class MLGWalk():
 
         if self.FLAGS.variant == "mlgw_i":
             h_t_b = self.BGRU(tf.reverse(h_t[:,:,:,:,self.config['l_dim'] +2:], [0]))
-        elif "mlgw_kl" in self.FLAGS.variant:
+        elif "mlgw_r" in self.FLAGS.variant:
             h_t_b = self.BGRU(tf.reverse(h_t[:,:,:,:,self.config['l_dim'] +3:], [0]))
         else:
             print("Unknown variant option: {}".format(self.FLAGS.variant))
@@ -448,7 +448,7 @@ class MLGWalk():
         
         if self.FLAGS.variant == "mlgw_i":
             return output, tf.reduce_sum(h_t[:-1,:, :,:,self.config['l_dim']+1],0), None
-        elif "mlgw_kl" in self.FLAGS.variant:
+        elif "mlgw_r" in self.FLAGS.variant:
             return output, tf.reduce_sum(h_t[:-1,:, :,:,self.config['l_dim']+1],0), tf.reduce_sum(h_t[:-1,:, :,:,self.config['l_dim']+2],0)
         else:
             print("Unknown variant option: {}".format(self.FLAGS.variant))
@@ -527,7 +527,7 @@ class MLGWalk():
             
             if self.FLAGS.variant == "mlgw_i":
                 M_loss = tf.reduce_mean(_cost - reward * (-self.config['beta'] * likelihood), 1)
-            elif "mlgw_kl" in self.FLAGS.variant:
+            elif "mlgw_r" in self.FLAGS.variant:
                 M_loss = tf.reduce_mean(_cost - reward * ((-self.config['beta']  *likelihood) - (self.config['alpha'] * KL)), 1)
             else:
                 print("Unknown variant option: {}".format(self.FLAGS.variant))
@@ -611,12 +611,12 @@ class MLGWalk():
         '''
 
         train_mask, test_mask = samples
-        if self.FLAGS.save:
-            if not os.path.exists('paths'):
-                os.mkdir('paths')
+        if self.FLAGS.save_path or self.FLAGS.save_emb:
+            if not os.path.exists('output'):
+                os.mkdir('output')
             train_mask = np.hstack((train_mask, test_mask))
-            save_npz('paths/{}_idx'.format(self.id), csr_matrix(train_mask))
-            if verbose: print("Path indecies saved in file: %s" % "path/{}".format(self.FLAGS.dataset))
+            save_npz('output/{}_idx'.format(self.id), csr_matrix(train_mask))
+            if self.FLAGS.verbose: print("Indecies saved in file: %s" % "output/{}".format(self.FLAGS.dataset))
             allidx = np.arange(train_mask.shape[0])
             Y_train = labels[train_mask, :]
             nbatches = int(np.ceil(train_mask.shape[0] / self.FLAGS.batchsize))
@@ -681,11 +681,13 @@ class MLGWalk():
 
                         print( '[{0:5d}]  TrainE={1:.4f}  TrainAcc={2:.4f}'.format( e, epoch_cost, train_acc ))
 
-            if self.FLAGS.save:
-                np.save('path/{}_idx'.format(self.FLAGS.dataset), train_mask)
-                self.get_emb(sess, train_mask,self.FLAGS.batchsize)
+            if self.FLAGS.save_path:
                 self.__save_path(sess, train_mask, self.FLAGS.batchsize)
-                if verbose: print("Path saved in file: %s" % "path/{}_node".format(self.FLAGS.dataset))
+                if self.FLAGS.verbose: print("Path saved in file: %s" % "output/{}_node".format(self.FLAGS.dataset))
+                exit()
+            elif self.FLAGS.save_emb:
+                self.get_emb(sess, train_mask,self.FLAGS.batchsize)
+                if self.FLAGS.verbose: print("Embeddings saved in file: %s" % "output/{}_emb".format(self.FLAGS.dataset))
                 exit()
             else:
                 predY = self.prediction(sess, test_mask, largebatchsize=self.FLAGS.batchsize)
@@ -756,9 +758,8 @@ class MLGWalk():
                                             self.is_training: False,
                                             self.get_path: False}))
 
-        print(embX[0].shape, embX[1].shape)
         emb = np.concatenate(embX,-2)
-        np.save("path/{}_emb".format(self.FLAGS.dataset), emb)
+        np.save("output/{}_emb".format(self.FLAGS.dataset), emb)
         
 
     def __save_path(self, sess, X, largebatchsize=200):
@@ -783,7 +784,7 @@ class MLGWalk():
             pathX_node.append(paths)
 
         path_node = np.vstack(pathX_node)
-        np.save("path/{}_node".format(self.FLAGS.dataset), path_node)
+        np.save("output/{}_node".format(self.FLAGS.dataset), path_node)
 
 
     def prediction(self, sess, X, largebatchsize=500):
