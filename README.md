@@ -35,8 +35,8 @@ Use `python MLGW.py` to run using default settings. The parameters can be change
 The MLGW model handles dataset with/without edge attributes but assumes no missing node attribute. Therefore, at minimums, the code requires that a `--dataset_dir` option is specified which specifies the following data files:
 
 * <dataset_dir>/<dataset>.edgelist -- An edgelist file describing the input graph. This is a two columned file with format `<source node>\t<target node>`.
-* <dataset_dir>/<dataset>_matrices/node_attr.npz -- A numpy-stored array of node features ordered according to the node index in the edgelist file.
-* <dataset_dir>/<dataset>_matrices/edge_attr.npz [optional] -- A numpy-stored array of edge features if available; ordered according to the edge appearance in the edgelist file.
+* <dataset_dir>/\<dataset>_matrices/node_attr.npz -- A numpy-stored array of node features ordered according to the node index in the edgelist file.
+* <dataset_dir>/\<dataset>_matrices/edge_attr.npz [optional] -- A numpy-stored array of edge features if available; ordered according to the edge appearance in the edgelist file.
 * <dataset_dir>/<dataset>_matrices/label.npz -- A numpy-stored binary array of node labels; ordered according to the node index in the edgelist file. A zero vector is used to represent unlabeled nodes. For instance [[0,1],[1,1],[0,0]] the last entry represents an unlabeled node.
 
 To run the model on a new dataset, you need to make data files in the format described above.
