@@ -60,7 +60,6 @@ class MLGWalk():
         self.config['num_walks'] = FLAGS.num_walks
         self.config['dim_y'] = num_of_labels
         self.config['transductive'] = FLAGS.transductive
-        self.config['activation'] = tf.nn.relu
         
         # place holders
         self.X = tf.placeholder(tf.int64, shape=(None,))
@@ -154,13 +153,13 @@ class MLGWalk():
             s, t = map(int, edgei[:2])
 
             s, t = s+1, t+1
-            if neighbor.has_key(t):
+            if t in neighbor:
                 neighbor[t][1].append([iter])
             else:
                 neighbor[t] = [[],[[iter]]]
 
             iter += 1
-            if neighbor.has_key(s):
+            if s in neighbor:
                 neighbor[s][0].append([iter])
             else:
                 neighbor[s] = [[[iter]], []]
@@ -170,7 +169,7 @@ class MLGWalk():
             iter += 1
 
         edges_per_node = np.zeros((len(neighbor), self.config['max_neighbors']))
-        for key, value in neighbor.iteritems():
+        for key, value in neighbor.items():
             value[0] = np.array(value[0])
             value[1] = np.array(value[1])
             half = int(self.config['max_neighbors'] / 2)
@@ -181,21 +180,21 @@ class MLGWalk():
                     if value[1].shape[0] > 0:
                         others = value[1][:, 0]
                         if others.shape[0] >= space:
-                            others_samp = rn.sample(others, space)
+                            others_samp = self.rng.choice(others, size=space, replace=False)
                             edges_per_node[key, value[0].shape[0]:value[0].shape[0] + space] = others_samp
                         else:
                             edges_per_node[key, value[0].shape[0]:value[0].shape[0] + others.shape[0]] = others
                 else:
                     rank = value[0][:, 0]
-                    samp = rn.sample(rank, half)
-                    cur = list(set(rank).difference(samp))
+                    samp = self.rng.choice(rank, size=half, replace=False)
+                    cur = np.setdiff1d(rank, samp).tolist()
                     edges_per_node[key, :half] = samp
                     if value[1].shape[0] < 1:
                         edges_per_node[key, half:half+len(cur)] = cur[:half]
                     else:
                         others = value[1][:, 0]
                         if others.shape[0] >= half:  
-                            others_samp = rn.sample(others, half)
+                            others_samp = self.rng.choice(others, size=half, replace=False)
                             edges_per_node[key, half:] = others_samp
                         else:
                             edges_per_node[key, half:(half + others.shape[0])] = others
@@ -206,7 +205,7 @@ class MLGWalk():
             elif value[1].shape[0] > 0:
                 others = value[1][:, 0]
                 if others.shape[0] >= self.config['max_neighbors']:
-                    others_samp = rn.sample(others, self.config['max_neighbors'])
+                    others_samp = self.rng.choice(others, size=self.config['max_neighbors'], replace=False)
                     edges_per_node[key, :] = others_samp
                 else:
                     edges_per_node[key, :others.shape[0]] = others
