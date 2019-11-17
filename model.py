@@ -8,6 +8,8 @@ from __future__ import division
 import os, time
 os.environ['PYTHONHASHSEED'] = '2018'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['TF_CPP_MIN_VLOG_LEVEL']='3'
+
 
 glo_seed = 2018
 
@@ -20,6 +22,7 @@ from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_sc
 from scipy.sparse import load_npz, save_npz
 from sklearn.preprocessing import Normalizer
 from sklearn.metrics.pairwise import cosine_distances
+import tensorflow_probability as tfp
 
 
 
@@ -39,7 +42,7 @@ class MLGWalk():
         rn.seed(glo_seed)
         self.rng = np.random.RandomState(seed=glo_seed)
         np.random.seed(glo_seed)
-        tf.set_random_seed(glo_seed)
+        tf.compat.v1.set_random_seed(glo_seed)
 
 
         #Initialize parameters
@@ -50,11 +53,11 @@ class MLGWalk():
         self.config = OrderedDict()
         self.config['l_dim'] = FLAGS.l_dim
         self.config['walk_len'] = FLAGS.walk_len
-        self.config['beta'] = FLAGS.beta
+        self.config['beta_hat'] = 1/(FLAGS.alpha+FLAGS.beta)
         self.config['lrate'] = FLAGS.lrate
         self.config['max_neighbors'] = FLAGS.max_neighbors
         self.config['gamma'] = FLAGS.gamma
-        self.config['alpha'] = FLAGS.alpha
+        self.config['alpha_hat'] = FLAGS.alpha/(FLAGS.alpha+FLAGS.beta)
 
         #other model parameters 
         self.config['num_walks'] = FLAGS.num_walks
@@ -62,9 +65,9 @@ class MLGWalk():
         self.config['transductive'] = FLAGS.transductive
         
         # place holders
-        self.X = tf.placeholder(tf.int64, shape=(None,))
-        self.is_training = tf.placeholder(tf.bool)
-        self.get_path = tf.placeholder(tf.bool)
+        self.X = tf.compat.v1.placeholder(tf.int32, shape=(None,))
+        self.is_training = tf.compat.v1.placeholder(tf.bool)
+        self.get_path = tf.compat.v1.placeholder(tf.bool)
         self.gamma = tf.constant(self.config['gamma'])
 
         self.T = tf.constant(float(self.config['walk_len']))
@@ -77,7 +80,6 @@ class MLGWalk():
             self.config['l_dim'],
             self.config['max_neighbors'],
             time.time()))
-
     
         self.is_train = True
 
@@ -85,26 +87,30 @@ class MLGWalk():
     #load the node and edge attributes 
     def load_data(self, test_nodes):
 
-        with tf.variable_scope("cost", reuse=tf.AUTO_REUSE):
+        with tf.compat.v1.variable_scope("cost", reuse=tf.compat.v1.AUTO_REUSE):
             node_features = load_npz("{}/{}_matrices/node_attr.npz".format(self.FLAGS.dataset_dir,self.FLAGS.dataset)).toarray()
             node_features = Normalizer().fit_transform(node_features)
-            node_features = np.vstack((np.zeros(node_features.shape[-1]), node_features))
+            self.node_features = np.vstack((np.zeros(node_features.shape[-1]), node_features))
 
-            self.node_emb = tf.get_variable(name="node_emb", shape=node_features.shape, initializer=tf.constant_initializer(node_features), dtype=self.dtype,
-                                                trainable=False, use_resource=True)
-            self.config['dim_Av'] = self.node_emb.get_shape().as_list()[-1]
+            
+            self.node_emb_init= tf.compat.v1.placeholder(tf.float32, shape=self.node_features.shape)
+            self.node_emb = tf.Variable(self.node_emb_init, name="edge_emb", trainable=False)
+                    
+            # self.node_emb = tf.compat.v1.get_variable(name="node_emb", shape=node_features.shape, initializer=tf.compat.v1.constant_initializer(node_features), dtype=self.dtype,
+                                                # trainable=False)
+            self.config['feature_dim'] = self.node_features.shape[-1]
 
             if self.FLAGS.has_edge_attr:
                 try:
                     edge_features = load_npz("{}/{}_matrices/edge_attr.npz".format(self.FLAGS.dataset_dir,self.FLAGS.dataset)).toarray()
                     edge_features = np.vstack((np.zeros(edge_features.shape[-1]), edge_features))
                     self.edge_features = Normalizer().fit_transform(edge_features)
-                    self.edge_emb_init= tf.placeholder(tf.float32, shape=self.edge_features.shape)
-                    self.edge_emb = tf.Variable(self.edge_emb_init, name="edge_emb", trainable=False, use_resource=True)
+                    self.edge_emb_init= tf.compat.v1.placeholder(tf.float32, shape=self.edge_features.shape)
+                    self.edge_emb = tf.Variable(self.edge_emb_init, name="edge_emb", trainable=False)
                     self.has_edge_attr = True
 
                 except:
-                    print("Error reading the reference file. Defaulting to text only")
+                    print("Error reading the edge attributes. Defaulting to node attributes only")
                     self.edge_emb = None
                     self.has_edge_attr = False
             else:
@@ -112,7 +118,7 @@ class MLGWalk():
                 self.has_edge_attr = False
 
 
-            self.Y = tf.placeholder(self.dtype, shape=(None, self.config['dim_y']))
+            self.Y = tf.compat.v1.placeholder(self.dtype, shape=(None, self.config['dim_y']))
             self.setup_lookup(test_nodes) #setup 
             self.attention_node = tf.Variable(tf.ones([self.config['dim_y'],self.config['num_walks'], self.FLAGS.batchsize]),validate_shape=False) #tf.get_variable("att_vect", shape=[self.config['num_walks'], 128])
             self.attention_edge = tf.Variable(tf.ones([self.config['dim_y'], self.config['num_walks'], self.FLAGS.batchsize]),validate_shape=False) #tf.get_variable("att_vect", shape=[self.config['num_walks'], 128])
@@ -122,7 +128,6 @@ class MLGWalk():
             self.get_pt = self.__get_walk(self.X)
             self.pred = self.__predict(self.X)
 
-
     def __str__(self):
         '''
         report configurations
@@ -131,10 +136,6 @@ class MLGWalk():
         for key in self.config:
             msg.append('{0:15}:{1:>20}\n'.format(key, self.config[key]))
         return '\n'.join(msg)
-
-    def denseNDArrayToSparseTensor(self, arr):
-        idx  = np.where(arr != 0.0)
-        return tf.SparseTensor(np.vstack(idx).T, arr[idx], arr.shape)
 
 
     def setup_lookup(self, test_nodes):
@@ -216,38 +217,16 @@ class MLGWalk():
             test_mask = ~np.isin(np.array(edge_tensor)[edges_per_node.astype(np.int32)], test_nodes)
             null_neighboors = edges_per_node > 0
             test_mask = np.logical_and(test_mask, null_neighboors)
-        self.edges_per_node = tf.convert_to_tensor(edges_per_node, tf.int64)#self.denseNDArrayToSparseTensor(edges_per_node)
-        self.edge_tensor = tf.convert_to_tensor(edge_tensor, tf.int64)
-        self.test_mask = tf.convert_to_tensor(test_mask, tf.bool)
 
-
-    def gather_cols3D(self, params, indices):
-        '''
-            Select specific columns per row for 3D matrix
-        '''
-        p_shape = tf.shape(params)
-        p_flat = tf.reshape(params, [-1])
-        i_flat = tf.reshape(tf.reshape(tf.range(0, p_shape[0]) * p_shape[1], [-1]) + indices, [-1])
-        partitions = tf.reduce_sum(tf.one_hot(i_flat, tf.shape(p_flat)[0], dtype='int32'), 0)
-        col_sel = tf.dynamic_partition(p_flat, partitions, 2)
-        col_sel = col_sel[1]
-        return tf.reshape(col_sel,[p_shape[0], 1])
-
-
-    def gather_cols4D(self, params, indices):
-        '''
-            Select specific columns per row for 4D matrix
-        '''
-        p_shape = tf.shape(params)
-        A = params.get_shape().as_list()[:2]
-        p_flat = tf.reshape(params, [-1])
-        indices = tf.reshape(indices, [-1])
-        i_flat = tf.reshape(tf.range(0, p_shape[1]*p_shape[0]*p_shape[2]) * p_shape[3], [-1]) + indices
-        partitions = tf.reduce_sum(tf.one_hot(i_flat, tf.shape(p_flat)[0], dtype='int32'), 0)
-        col_sel = tf.dynamic_partition(p_flat, partitions, 2)
-        col_sel = col_sel[1]
-        return tf.reshape(col_sel,[A[0],A[1], p_shape[2], 1])
-
+        self.edges_per_node_arr,self.edge_tensor_arr,self.test_mask_arr = np.array(edges_per_node), np.array(edge_tensor), np.array(test_mask)
+       
+        self.edges_per_node_init= tf.compat.v1.placeholder(tf.int32, shape=self.edges_per_node_arr.shape)
+        self.edges_per_node = tf.Variable(self.edges_per_node_init, name="edges_per_node", trainable=False)
+        self.edge_tensor_init= tf.compat.v1.placeholder(tf.int32, shape=self.edge_tensor_arr.shape)
+        self.edge_tensor = tf.Variable(self.edge_tensor_init, name="edge_tensor", trainable=False)
+        self.test_mask_init= tf.compat.v1.placeholder(tf.bool, shape=self.test_mask_arr.shape)
+        self.test_mask = tf.Variable(self.test_mask_init, name="test_mask", trainable=False)
+                    
 
     def dense(self, inputs, output_dim, name, is_private=True):
 
@@ -262,27 +241,27 @@ class MLGWalk():
         shape = inputs.get_shape().as_list()
         if len(shape) > 4:
             if is_private:
-                W = tf.get_variable(name='W_{}'.format(name) ,
-                                    initializer = lambda: tf.glorot_uniform_initializer()(( shape[0], shape[-1], output_dim)))
-                b = tf.get_variable(name='b_{}'.format(name) , initializer = lambda: -1*tf.ones_initializer()(output_dim))
+                W = tf.compat.v1.get_variable(name='W_{}'.format(name) ,
+                                    initializer = lambda: tf.compat.v1.glorot_uniform_initializer()(( shape[0], shape[-1], output_dim)))
+                b = tf.compat.v1.get_variable(name='b_{}'.format(name) , initializer = lambda: -1*tf.compat.v1.ones_initializer()(output_dim))
 
                 return tf.nn.bias_add(tf.einsum('abilj,ajk->abilk', inputs, W), b)
             else:
-                W = tf.get_variable(name='W_{}'.format(name) ,
-                                    initializer = lambda: tf.glorot_uniform_initializer()((shape[-1], output_dim)))
-                b = tf.get_variable(name='b_{}'.format(name) , initializer = lambda: -1*tf.ones_initializer()(output_dim))
+                W = tf.compat.v1.get_variable(name='W_{}'.format(name) ,
+                                    initializer = lambda: tf.compat.v1.glorot_uniform_initializer()((shape[-1], output_dim)))
+                b = tf.compat.v1.get_variable(name='b_{}'.format(name) , initializer = lambda: -1*tf.compat.v1.ones_initializer()(output_dim))
 
                 return tf.nn.bias_add(tf.einsum('abilj,jk->abilk', inputs, W), b)
 
         else:
-            W = tf.get_variable(name='W_{}'.format(name) ,
-                                initializer = lambda: tf.glorot_uniform_initializer()((shape[0],  shape[-1], output_dim)))
-            b = tf.get_variable(name='b_{}'.format(name) , initializer = lambda: -1*tf.ones_initializer()(output_dim))
+            W = tf.compat.v1.get_variable(name='W_{}'.format(name) ,
+                                initializer = lambda: tf.compat.v1.glorot_uniform_initializer()((shape[0],  shape[-1], output_dim)))
+            b = tf.compat.v1.get_variable(name='b_{}'.format(name) , initializer = lambda: -1*tf.compat.v1.ones_initializer()(output_dim))
 
             return tf.nn.bias_add(tf.einsum('abij,ajk->abik', inputs, W), b)
 
 
-    def sample_neighbor_walk(self, current_x, current_emb, h, t, reuse=tf.AUTO_REUSE):
+    def sample_neighbor_walk(self, current_x, current_emb, h, t, reuse=tf.compat.v1.AUTO_REUSE):
         '''
             current_x -- current nodes (v^t)
             current_emb -- current node feature embedding (x^t)
@@ -297,14 +276,14 @@ class MLGWalk():
         #Get mask which removing test nodes and dummy node neighbors from node neighborhood
         mask_neighbors = tf.gather(self.test_mask, current_x)
         #If training phase: mask/remove only dummy nodes, else remove dummy and test nodes (if inductive)
-        mask = tf.cond(self.is_training, lambda : mask_neighbors, lambda : tf.greater(neighbors,0 ))
+        mask = tf.cond(pred=self.is_training, true_fn=lambda : mask_neighbors, false_fn=lambda : tf.greater(neighbors,0 ))
 
         #Setup inputs to the score network
         h = tf.tile(tf.expand_dims(h, 3), [1,1, 1, self.config['max_neighbors'], 1])
-        neighbor_node_emb = tf.nn.embedding_lookup(self.node_emb, tf.gather(self.edge_tensor, neighbors))
+        neighbor_node_emb = tf.nn.embedding_lookup(params=self.node_emb, ids=tf.gather(self.edge_tensor, neighbors))
         current_emb = tf.tile(tf.expand_dims(current_emb, 3), [1,1,1, self.config['max_neighbors'], 1])
         if self.has_edge_attr:
-            neighbor_edge_emb = tf.nn.embedding_lookup(self.edge_emb,tf.div(neighbors,2))
+            neighbor_edge_emb = tf.nn.embedding_lookup(params=self.edge_emb,ids=tf.compat.v1.div(neighbors,2))
             neighbor_emb_act = tf.add_n((neighbor_edge_emb, current_emb, neighbor_node_emb))
         else:
             neighbor_emb_act = tf.add_n((current_emb, neighbor_node_emb))
@@ -317,25 +296,24 @@ class MLGWalk():
         filter_neighbors = tf.greater_equal(neighbors_weight, 0.5)
         mask2 = tf.logical_and(filter_neighbors, mask)
         #Sample from the probability distribution
-        # neighbors_weight = tf.div_no_nan(neighbors_weight , tf.reduce_sum(neighbors_weight))
-        neighbors_weight = tf.div_no_nan(neighbors_weight , tf.reduce_sum(neighbors_weight, -1, keepdims=True))
+        neighbors_weight = tf.math.divide_no_nan(neighbors_weight , tf.reduce_sum(input_tensor=neighbors_weight, axis=-1, keepdims=True))
 
         if self.FLAGS.variant == "mlgw_i":
-            next_id_sample = tf.expand_dims(tf.distributions.Categorical(probs=neighbors_weight).sample(), -1)
+            next_id_sample = tf.expand_dims(tfp.distributions.Categorical(probs=neighbors_weight).sample(), -1)
         else:
-            private_policy = tf.distributions.Categorical(logits=tf.log(tf.clip_by_value(neighbors_weight,1e-10,1.0)))
+            private_policy = tfp.distributions.Categorical(logits=tf.math.log(tf.clip_by_value(neighbors_weight,1e-10,1.0)))
             #Global policy
             att_emb_glob = self.dense(att_emb, self.config['l_dim'], name='e_e_dense2_emb', is_private= True)
             neighbors_weight_glob = tf.squeeze(tf.keras.backend.hard_sigmoid(self.dense(att_emb_glob, 1, name='e_e_dense2_public', is_private=False )),-1)
             neighbors_weight_glob = tf.multiply(neighbors_weight_glob,tf.cast(mask, tf.float32))
-            neighbors_weight_glob = tf.div_no_nan(neighbors_weight_glob , tf.reduce_sum(neighbors_weight_glob, -1, keepdims=True))
-            global_policy = tf.distributions.Categorical(logits=tf.log(tf.clip_by_value(neighbors_weight_glob,1e-10,1.0)))
+            neighbors_weight_glob = tf.math.divide_no_nan(neighbors_weight_glob , tf.reduce_sum(input_tensor=neighbors_weight_glob, axis=-1, keepdims=True))
+            global_policy = tfp.distributions.Categorical(logits=tf.math.log(tf.clip_by_value(neighbors_weight_glob,1e-10,1.0)))
 
             if self.FLAGS.variant == "mlgw_r":
                 next_id_sample = tf.expand_dims(private_policy.sample(), -1)
             elif self.FLAGS.variant == "mlgw_r+":
-                final_weight = tf.cond(self.is_training, lambda : tf.multiply(neighbors_weight, neighbors_weight_glob), lambda : neighbors_weight)
-                joint_policy = tf.distributions.Categorical(logits=tf.log(tf.clip_by_value(final_weight,1e-10,1.0)))
+                final_weight = tf.cond(pred=self.is_training, true_fn=lambda : tf.multiply(neighbors_weight, neighbors_weight_glob), false_fn=lambda : neighbors_weight)
+                joint_policy = tfp.distributions.Categorical(logits=tf.math.log(tf.clip_by_value(final_weight,1e-10,1.0)))
                 next_id_sample = tf.expand_dims(joint_policy.sample(), -1)
             else:
                 print("Unknown variant option: {}".format(self.FLAGS.variant))
@@ -344,28 +322,31 @@ class MLGWalk():
             
 
         #Obtain the sampled next node to visit
-        next_id = tf.batch_gather(neighbors, next_id_sample)
-        next_id = tf.nn.embedding_lookup(self.edge_tensor, next_id)
+        next_id = tf.gather(neighbors, next_id_sample, batch_dims=-1)
+        next_id = tf.nn.embedding_lookup(params=self.edge_tensor, ids=next_id)
 
         #Aggregate the embeddings of the neighbors with score > 0.5 (C_n^t)
-        neighbor_emb = tf.reduce_sum(tf.multiply(neighbor_node_emb, tf.expand_dims(tf.cast(mask2, tf.float32), -1)),3)
+        neighbor_emb = tf.reduce_sum(input_tensor=tf.multiply(neighbor_node_emb, tf.expand_dims(tf.cast(mask2, tf.float32), -1)),axis=3)
         #Just to further prevent sampling a masked node in the unlikely event that all had zero probabilities
-        is_sample_masked = tf.batch_gather(mask, next_id_sample)
-        non_isolated_nodes = tf.logical_and(tf.reduce_any(mask, -1), tf.squeeze(is_sample_masked,-1))
-        next_id = tf.add(tf.multiply(tf.squeeze(next_id,-1),tf.cast(non_isolated_nodes, tf.int64)) , tf.multiply(current_x,tf.cast(~non_isolated_nodes, tf.int64)))
+        is_sample_masked = tf.gather(mask, next_id_sample, batch_dims=-1)
+        non_isolated_nodes = tf.logical_and(tf.reduce_any(input_tensor=mask, axis=-1), tf.squeeze(is_sample_masked,-1))
+        next_id = tf.add(tf.multiply(tf.squeeze(next_id,-1),tf.cast(non_isolated_nodes, tf.int32)) , tf.multiply(current_x,tf.cast(~non_isolated_nodes, tf.int32)))
 
-        if self.FLAGS.variant == "mlgw_r+":
-            likelihood = tf.squeeze(self.gather_cols4D(final_weight, next_id_sample),[-1])
-        else:
-            likelihood = tf.squeeze(self.gather_cols4D(neighbors_weight, next_id_sample),[-1])
-        likelihood = tf.multiply(tf.pow(self.gamma, (self.T - t)), tf.log(tf.clip_by_value(likelihood,1e-10,1.0)))
+        pi_i = tf.squeeze(tf.gather(neighbors_weight, next_id_sample, batch_dims=-1),[-1])
+        if "mlgw_r" in self.FLAGS.variant:
+            pi_g = tf.squeeze(tf.gather(neighbors_weight_glob, next_id_sample, batch_dims=-1),[-1])
+            pi_g = tf.math.log(tf.clip_by_value(pi_g,1e-10,1.0))
+
+        pi_i = tf.math.log(tf.clip_by_value(pi_i,1e-10,1.0))
+
+        discnt = tf.ones_like(pi_i)* tf.pow(self.gamma, (self.T - t))
 
         if self.FLAGS.variant == "mlgw_i":
-            return tf.expand_dims(next_id,-1), neighbor_emb, tf.expand_dims(likelihood,-1), None
+            floss = -1*pi_i
+            return tf.expand_dims(next_id,-1), neighbor_emb, tf.expand_dims(floss, -1), tf.expand_dims(discnt,-1)
         elif "mlgw_r" in self.FLAGS.variant:
-            # entropy = -self.config['beta'] * tf.reduce_mean(tf.losses.log_loss(labels=neighbors_weight, predictions=neighbors_weight_glob, reduction=tf.losses.Reduction.NONE), -1)
-            KL = tf.multiply(tf.pow(self.gamma, (self.T - t)), tf.distributions.kl_divergence(private_policy, global_policy))
-            return tf.expand_dims(next_id,-1), neighbor_emb, tf.expand_dims(likelihood,-1),  tf.expand_dims(KL,-1)
+            floss = (((self.config['alpha_hat']/self.config['beta_hat'])* pi_g) - (1/self.config['beta_hat'])* pi_i)
+            return tf.expand_dims(next_id,-1), neighbor_emb, tf.expand_dims(floss,-1),  tf.expand_dims(discnt,-1)
 
 
     def GRU(self, trueX):
@@ -384,14 +365,15 @@ class MLGWalk():
             """
 
             h_tm1 = input[:,:,:,:self.config['l_dim']]
-            x = tf.cast(input[:,:,:,self.config['l_dim']], tf.int64)
-            h_tm1 = tf.cond(self.is_training, lambda : h_tm1 * self.dropout_recurrent, lambda : h_tm1)
+            x = tf.cast(input[:,:,:,self.config['l_dim']], tf.int32)
+            h_tm1 = tf.cond(pred=self.is_training, true_fn=lambda : h_tm1 * self.dropout_recurrent, false_fn=lambda : h_tm1)
 
 
-            x_t = tf.nn.embedding_lookup(self.node_emb, x)
-            next_x, c_t, likelihood, KL = self.sample_neighbor_walk(x, x_t, h_tm1, t)
+            x_t = tf.nn.embedding_lookup(params=self.node_emb, ids=x)
+            next_x, c_t, floss, discnt = self.sample_neighbor_walk(x, x_t, h_tm1, t)
 
-            x_t = tf.concat([x_t, c_t], -1)
+            # x_t = tf.concat([x_t, c_t], -1)
+            x_t = tf.add(x_t, c_t)
             
             zr_t = tf.keras.backend.hard_sigmoid(self.dense(tf.concat([x_t, h_tm1],-1), self.config['l_dim']*2, name='zr'))
             z_t, r_t = tf.split(value=zr_t, num_or_size_splits=2, axis=-1)
@@ -401,57 +383,30 @@ class MLGWalk():
 
             # Compute the next hidden state
             h_t = tf.multiply(1 - z_t, h_tm1) + tf.multiply(z_t, h_proposal)
-
-            if self.FLAGS.variant == "mlgw_i":
-                return tf.concat([h_t, tf.cast(next_x, self.dtype), likelihood, x_t],-1)
-            elif "mlgw_r" in self.FLAGS.variant:
-                return tf.concat([h_t, tf.cast(next_x, self.dtype), likelihood, KL, x_t],-1)
-            else:
-                print("Unknown variant option: {}".format(self.FLAGS.variant))
-                exit()
+            return tf.concat([h_t, tf.cast(next_x, self.dtype), floss, discnt, x_t],-1)
 
         # A little hack (to obtain the same shape as the input matrix) to define the initial hidden state h_0
-        dummy_emb = tf.tile(tf.expand_dims(tf.cast(trueX, self.dtype),-1), [1,1,1,self.config['dim_Av']])
+        dummy_emb = tf.tile(tf.expand_dims(tf.cast(trueX, self.dtype),-1), [1,1,1,self.config['feature_dim']])
         shape = dummy_emb.get_shape().as_list()
-        h_0 = tf.matmul(dummy_emb, tf.zeros(dtype=tf.float32, shape=(shape[0],shape[1], self.config['dim_Av'], self.config['l_dim'])),
+        h_0 = tf.matmul(dummy_emb, tf.zeros(dtype=tf.float32, shape=(shape[0],shape[1], self.config['feature_dim'], self.config['l_dim'])),
                         name='h_0' )
         next_x0 = tf.expand_dims(tf.cast(trueX, self.dtype),-1)
 
-        if self.FLAGS.variant == "mlgw_i":
-            concat_tensor = tf.concat([h_0, next_x0, next_x0, dummy_emb, dummy_emb], -1)
-        elif "mlgw_r" in self.FLAGS.variant:
-            concat_tensor = tf.concat([h_0, next_x0, next_x0, next_x0,  dummy_emb, dummy_emb], -1)
-        else:
-            print("Unknown variant option: {}".format(self.FLAGS.variant))
-            exit()
+        concat_tensor = tf.concat([h_0, next_x0, next_x0, next_x0, dummy_emb], -1)
         
+        self.dropout_recurrent = tf.nn.dropout(tf.ones_like(h_0[0,0,:,:]),self.FLAGS.drate)
 
-        if self.is_train == True:
-            dropout_hidden = tf.nn.dropout(h_0[0,0,:,:], 0.80, name='dropout2')
-        self.dropout_recurrent = tf.get_default_graph().get_tensor_by_name('{}/Floor:0'.format("/".join(dropout_hidden.name.split("/")[:-1])))
 
         h_t = tf.scan(forward, self.range, initializer = concat_tensor,parallel_iterations=20,
                       name='h_t_transposed' )
 
-        if self.FLAGS.variant == "mlgw_i":
-            h_t_b = self.BGRU(tf.reverse(h_t[:,:,:,:,self.config['l_dim'] +2:], [0]))
-        elif "mlgw_r" in self.FLAGS.variant:
-            h_t_b = self.BGRU(tf.reverse(h_t[:,:,:,:,self.config['l_dim'] +3:], [0]))
-        else:
-            print("Unknown variant option: {}".format(self.FLAGS.variant))
-            exit()
+        h_t_b = self.BGRU(tf.reverse(h_t[:,:,:,:,self.config['l_dim']+3:], [0]))
 
+        ht =  tf.add(h_t[-1,:,:,:,:self.config['l_dim']] , h_t_b)
+        output = tf.cond(pred=self.get_path, true_fn=lambda : tf.transpose(a=h_t[:,:,:, :,self.config['l_dim']], perm=[3,1,2,0]), false_fn=lambda : ht)
         
-        ht =  h_t[-1,:,:,:,:self.config['l_dim']] + h_t_b
-        output = tf.cond(self.get_path, lambda : tf.transpose(h_t[:,:,:, :,self.config['l_dim']], perm=[3,1,2,0]), lambda : ht)
-        
-        if self.FLAGS.variant == "mlgw_i":
-            return output, tf.reduce_sum(h_t[:-1,:, :,:,self.config['l_dim']+1],0), None
-        elif "mlgw_r" in self.FLAGS.variant:
-            return output, tf.reduce_sum(h_t[:-1,:, :,:,self.config['l_dim']+1],0), tf.reduce_sum(h_t[:-1,:, :,:,self.config['l_dim']+2],0)
-        else:
-            print("Unknown variant option: {}".format(self.FLAGS.variant))
-            exit()
+        return output, tf.reduce_mean(input_tensor=h_t[:-1,:, :,:,self.config['l_dim']+1],axis=0), tf.reduce_mean(input_tensor=h_t[:-1,:, :,:,self.config['l_dim']+2],axis=0)
+       
 
 
 
@@ -470,7 +425,7 @@ class MLGWalk():
             """
 
 
-            h_tm1 = tf.cond(self.is_training, lambda: h_tm1 * self.dropout_recurrent_b, lambda: h_tm1)
+            h_tm1 = tf.cond(pred=self.is_training, true_fn=lambda: h_tm1 * self.dropout_recurrent_b, false_fn=lambda: h_tm1)
             zr_t = tf.keras.backend.hard_sigmoid(self.dense(tf.concat([x_t, h_tm1],-1), self.config['l_dim']*2, name ='zr_b'))
             z_t, r_t = tf.split(value=zr_t, num_or_size_splits=2, axis=-1)
             r_state = r_t * h_tm1
@@ -483,11 +438,9 @@ class MLGWalk():
 
         # A little hack (to obtain the same shape as the input matrix) to define the initial hidden state h_0
         shape = node_emb.get_shape().as_list()
-        h_0_b = tf.matmul(node_emb[0, :, :, :, :], tf.zeros(dtype=tf.float32, shape=(shape[1],shape[2], self.config['dim_Av']*2, self.config['l_dim'])),
+        h_0_b = tf.matmul(node_emb[0, :, :, :, :], tf.zeros(dtype=tf.float32, shape=(shape[1],shape[2], self.config['feature_dim'], self.config['l_dim'])),
                           name='h_0_b' )
-        if self.is_train == True:
-            dropout_hidden = tf.nn.dropout(h_0_b[0,:,:], 0.80, name='dropout2b' )
-            self.dropout_recurrent_b = tf.get_default_graph().get_tensor_by_name('{}/Floor:0'.format("/".join(dropout_hidden.name.split("/")[:-1])))
+        self.dropout_recurrent_b = tf.nn.dropout(tf.ones_like(h_0_b[0,:,:]),self.FLAGS.drate)
 
         h_t_transposed_b = tf.scan(backward, node_emb, initializer = h_0_b,parallel_iterations=20, name='h_t_transposed_b' )
         return h_t_transposed_b[-1,:,:,:,:]
@@ -503,17 +456,17 @@ class MLGWalk():
         return 1D tensor of cost (batch_size)
         '''
 
-        with tf.variable_scope("cost", reuse=tf.AUTO_REUSE):
+        with tf.compat.v1.variable_scope("cost", reuse=tf.compat.v1.AUTO_REUSE):
 
 
             X = tf.expand_dims(tf.expand_dims(trueX, 0),0 )
             X = tf.tile(X, [self.config['dim_y'], self.config['num_walks'],1])
 
-            Y = tf.transpose(tf.expand_dims(self.Y,-1), perm=[1,2,0])
+            Y = tf.transpose(a=tf.expand_dims(self.Y,-1), perm=[1,2,0])
             Y = tf.tile(Y, [1,self.config['num_walks'], 1])
 
             # X -> Z
-            Z, likelihood, KL = self.GRU(X)
+            Z, pi_cost, discnt = self.GRU(X)
             Z = tf.reshape(Z, [self.config['dim_y'], self.config['num_walks'], -1,self.config['l_dim']])
             
             log_pred_Y = tf.squeeze(self.dense(Z, 1, name='Z2y'),-1)
@@ -523,24 +476,18 @@ class MLGWalk():
 
             _cost = tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.cast(Y, self.dtype), logits=log_pred_Y)
 
-            
-            if self.FLAGS.variant == "mlgw_i":
-                M_loss = tf.reduce_mean(_cost - reward * (-self.config['beta'] * likelihood), 1)
-            elif "mlgw_r" in self.FLAGS.variant:
-                M_loss = tf.reduce_mean(_cost - reward * ((-self.config['beta']  *likelihood) - (self.config['alpha'] * KL)), 1)
-            else:
-                print("Unknown variant option: {}".format(self.FLAGS.variant))
-                exit()
+            floss = discnt*reward + discnt *pi_cost
+            M_loss = tf.reduce_mean(_cost) - tf.reduce_mean(floss)
 
-            return tf.reduce_mean(tf.reduce_mean(M_loss, 0))
+            return M_loss#tf.reduce_mean(input_tensor=tf.reduce_mean(input_tensor=M_loss, axis=0))
 
-    def __classify(self, trueX, reuse=tf.AUTO_REUSE):
+    def __classify(self, trueX, reuse=tf.compat.v1.AUTO_REUSE):
         '''
         classify input 1D tensor
 
         return 2D tensor (integer class labels)
         '''
-        with tf.variable_scope("cost", reuse=True):
+        with tf.compat.v1.variable_scope("cost", reuse=True):
 
 
             # X -> Z
@@ -550,17 +497,17 @@ class MLGWalk():
             Z = tf.reshape(Z, [self.config['dim_y'], self.config['num_walks'], -1,self.config['l_dim']])
 
             log_pred_Y = tf.squeeze(self.dense(Z, 1, name='Z2y'),-1)
-            Y = tf.reduce_mean(tf.nn.sigmoid(log_pred_Y),1)
+            Y = tf.reduce_mean(input_tensor=tf.nn.sigmoid(log_pred_Y),axis=1)
             Y = tf.cast(tf.greater_equal(Y, 0.5), tf.int32)
 
-            return tf.transpose(Y)
+            return tf.transpose(a=Y)
 
 
-    def get_embbeding(self, trueX, reuse=tf.AUTO_REUSE):
+    def get_embbeding(self, trueX, reuse=tf.compat.v1.AUTO_REUSE):
         '''
         Return latent vectors for nodes
         '''
-        with tf.variable_scope("cost", reuse=tf.AUTO_REUSE):
+        with tf.compat.v1.variable_scope("cost", reuse=tf.compat.v1.AUTO_REUSE):
 
             # X -> Z
             X = tf.expand_dims(tf.expand_dims(trueX, 0),0)
@@ -571,13 +518,13 @@ class MLGWalk():
             return Z
 
 
-    def __get_walk(self, trueX, reuse=tf.AUTO_REUSE):
+    def __get_walk(self, trueX, reuse=tf.compat.v1.AUTO_REUSE):
         '''
         return walk paths taken to classify nodes
         '''
         X = tf.expand_dims(tf.expand_dims(trueX, 0),0)
         X = tf.tile(X, [self.config['dim_y'], self.config['num_walks'],1])
-        with tf.variable_scope("cost", reuse=tf.AUTO_REUSE):
+        with tf.compat.v1.variable_scope("cost", reuse=tf.compat.v1.AUTO_REUSE):
             walk, _, _ = self.GRU(X)
             walk = tf.reshape(walk, [-1,self.config['dim_y'],self.config['num_walks'], self.config['walk_len']])
             return walk
@@ -627,23 +574,30 @@ class MLGWalk():
 
         self.is_train = True
 
-        with tf.variable_scope("cost", reuse=tf.AUTO_REUSE):
-            train_op = tf.train.AdamOptimizer(self.config['lrate']).minimize(self.cost)
+        with tf.compat.v1.variable_scope("cost", reuse=tf.compat.v1.AUTO_REUSE):
+            train_op = tf.compat.v1.train.AdamOptimizer(self.config['lrate']).minimize(self.cost)
 
         #TF config setup
-        config = tf.ConfigProto()
+        config = tf.compat.v1.ConfigProto()
         config.gpu_options.allow_growth = True
 
-        glob_init = tf.global_variables_initializer()
+        glob_init = tf.compat.v1.global_variables_initializer()
 
-        with tf.Session(config=config) as sess:
+        with tf.compat.v1.Session(config=config) as sess:
 
             #initialize variables
             if self.has_edge_attr:
-                sess.run(glob_init, feed_dict={self.edge_emb_init: self.edge_features})
+                sess.run(glob_init, feed_dict={self.edge_emb_init: self.edge_features,
+                                                self.node_emb_init: self.node_features,
+                                                self.edge_tensor_init: self.edge_tensor_arr,
+                                                self.edges_per_node_init: self.edges_per_node_arr,
+                                                self.test_mask_init: self.test_mask_arr})
             else:
-                sess.run(glob_init)
-            sess.run(tf.local_variables_initializer())
+                sess.run(glob_init, feed_dict={self.node_emb_init: self.node_features,
+                                                self.edge_tensor_init: self.edge_tensor_arr,
+                                                self.edges_per_node_init: self.edges_per_node_arr,
+                                                self.test_mask_init: self.test_mask_arr})
+            sess.run(tf.compat.v1.local_variables_initializer())
             sess.graph.finalize()  # Graph is read-only after this statement.
 
 
