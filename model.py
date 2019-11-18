@@ -120,9 +120,7 @@ class MLGWalk():
 
             self.Y = tf.compat.v1.placeholder(self.dtype, shape=(None, self.config['dim_y']))
             self.setup_lookup(test_nodes) #setup 
-            self.attention_node = tf.Variable(tf.ones([self.config['dim_y'],self.config['num_walks'], self.FLAGS.batchsize]),validate_shape=False) #tf.get_variable("att_vect", shape=[self.config['num_walks'], 128])
-            self.attention_edge = tf.Variable(tf.ones([self.config['dim_y'], self.config['num_walks'], self.FLAGS.batchsize]),validate_shape=False) #tf.get_variable("att_vect", shape=[self.config['num_walks'], 128])
-
+            
             self.cost = self.__cost(self.X)
             self.get_embd = self.get_embbeding(self.X)
             self.get_pt = self.__get_walk(self.X)
